@@ -1,4 +1,9 @@
-# Examples for TensorFlow integration with TensorRT (TF-TRT)
+# Examples for TF-TRT
+
+TF-TRT (TensorFlow integration with TensorRT) is a part of TensorFlow
+that optimizes TensorFlow graphs using
+[TensorRT](https://developer.nvidia.com/tensorrt).
+
 This repository contains a number of different examples
 that show how to use
 [TF-TRT](https://docs.nvidia.com/deeplearning/dgx/integrate-tf-trt/index.html).
