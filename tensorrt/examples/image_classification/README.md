@@ -1,4 +1,4 @@
-# TensorFlow-TensorRT Examples
+# Image classification examples
 
 This example includes scripts to run inference using a number of popular image classification models.
 
