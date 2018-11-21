@@ -71,6 +71,6 @@ Run with `--help` to see all available options.
 
 ### Accuracy tests
 
-There is a script provided in the example that parses the output log of inference.py
+There is a script provided in the example that parses the output log of `inference.py`
 to find the reported accuracy, and reports whether that accuracy matches with the
 baseline numbers.
