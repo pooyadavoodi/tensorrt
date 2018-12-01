@@ -8,9 +8,10 @@ that optimizes TensorFlow graphs using
 This repository contains a number of different examples
 that show how to use TF-TRT.
 
-The example [image classification](tensorrt/examples/image_classification)
-provides scripts to run inference on a number of popular
-image classification models.
+## Examples
+
+* [Image Classification](tftrt/examples/image_classification)
+* [Object Detection](tftrt/examples/object_detection)
 
 ## License
 
