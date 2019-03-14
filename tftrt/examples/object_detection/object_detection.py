@@ -365,7 +365,7 @@ def optimize_model(config_path,
                 raise ValueError('No images were found in calib_images_dir for int8 calibration.')
             image_paths = image_paths[0:num_calib_images]
             num_batches = len(image_paths) // max_batch_size
-            pbar = tqdm(total=num_batches)
+            pbar = tqdm.tqdm(total=num_batches)
 
             def feed_dict_fn():
                 pbar.update(1)
