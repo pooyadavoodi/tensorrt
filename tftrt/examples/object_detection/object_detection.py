@@ -364,9 +364,11 @@ def optimize_model(config_path,
             if len(image_paths) == 0:
                 raise ValueError('No images were found in calib_images_dir for int8 calibration.')
             image_paths = image_paths[0:num_calib_images]
-            num_batches =  len(image_paths) // max_batch_size
+            num_batches = len(image_paths) // max_batch_size
+            pbar = tqdm(total=num_batches)
 
             def feed_dict_fn():
+                pbar.update(1)
                 # read batch of images
                 batch_images = []
                 for image_path in image_paths[feed_dict_fn.index:feed_dict_fn.index+max_batch_size]:
@@ -380,6 +382,7 @@ def optimize_model(config_path,
                 fetch_names=[x + ':0' for x in output_names],
                 num_runs=num_batches,
                 feed_dict_fn=feed_dict_fn)
+            pbar.close()
 
     # re-enable variable batch size, this was forced to max
     # batch size during export to enable TensorRT optimization
