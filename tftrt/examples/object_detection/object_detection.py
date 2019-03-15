@@ -373,7 +373,7 @@ def optimize_model(config_path,
                     image = _read_image(image_path, calib_image_shape)           
                     batch_images.append(image)
                 feed_dict_fn.index += max_batch_size
-                return {INPUT_NAME+':0': batch_images}
+                return {INPUT_NAME+':0': np.array(batch_images)}
             feed_dict_fn.index = 0
 
             print('Calibrating INT8...')
