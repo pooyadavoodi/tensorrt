@@ -324,7 +324,7 @@ def optimize_model(config_path,
                 config,
                 checkpoint_path,
                 tmp_dir,
-                input_shape=[max_batch_size, None, None, 3])
+                input_shape=[None, None, None, 3])
 
     # read frozen graph from file
     frozen_graph_path = os.path.join(tmp_dir, FROZEN_GRAPH_NAME)
