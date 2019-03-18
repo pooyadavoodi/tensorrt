@@ -283,6 +283,9 @@ def optimize_model(config_path,
     -------
         A GraphDef representing the optimized model.
     """
+    if max_batch_size > 1 and calib_image_shape is None:
+        raise RuntimeError(
+            'Fixed calibration image shape must be provided for max_batch_size > 1')
     if os.path.exists(tmp_dir):
         if not remove_tmp_dir:
             raise RuntimeError(
@@ -533,6 +536,7 @@ def benchmark_model(frozen_graph,
     with tf.Graph().as_default() as tf_graph:
         with tf.Session(config=tf_config) as tf_sess:
             tf.import_graph_def(frozen_graph, name='')
+            train_writer = tf.summary.FileWriter('./tensorboard', tf_sess.graph)
             tf_input = tf_graph.get_tensor_by_name(INPUT_NAME + ':0')
             tf_boxes = tf_graph.get_tensor_by_name(BOXES_NAME + ':0')
             tf_classes = tf_graph.get_tensor_by_name(CLASSES_NAME + ':0')
