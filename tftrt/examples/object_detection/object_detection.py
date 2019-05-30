@@ -20,6 +20,8 @@ from __future__ import absolute_import
 
 import tensorflow as tf
 import tensorflow.contrib.tensorrt as trt
+from tensorflow.python.framework import dtypes
+from tensorflow.python.tools import optimize_for_inference_lib
 
 from collections import namedtuple
 from PIL import Image
@@ -29,6 +31,7 @@ import json
 import subprocess
 import os
 import glob
+import copy
 
 from .graph_utils import force_nms_cpu as f_force_nms_cpu
 from .graph_utils import replace_relu6 as f_replace_relu6
@@ -41,90 +44,114 @@ from object_detection import exporter
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
-Model = namedtuple('Model', ['name', 'url', 'extract_dir'])
+class Model:
+    def __init__(self,
+                 model_name='',
+                 output_names=None,
+                 INPUT_NAME='image_tensor',
+                 BOXES_NAME='detection_boxes',
+                 CLASSES_NAME='detection_classes',
+                 SCORES_NAME='detection_scores',
+                 MASKS_NAME='detection_masks',
+                 NUM_DETECTIONS_NAME='num_detections',
+                 PIPELINE_CONFIG_NAME='pipeline.config',
+                 CHECKPOINT_PREFIX='model.ckpt',
+                 FROZEN_GRAPH_NAME='frozen_inference_graph.pb'):
+        self.Model = namedtuple('Model', ['name', 'url', 'extract_dir'])
+        self.models = {
+            'ssd_mobilenet_v1_coco':
+            self.Model(
+                'ssd_mobilenet_v1_coco',
+                'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_coco_2018_01_28.tar.gz',
+                'ssd_mobilenet_v1_coco_2018_01_28',
+            ),
+            'ssd_mobilenet_v1_0p75_depth_quantized_coco':
+            self.Model(
+                'ssd_mobilenet_v1_0p75_depth_quantized_coco',
+                'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_0.75_depth_quantized_300x300_coco14_sync_2018_07_18.tar.gz',
+                'ssd_mobilenet_v1_0.75_depth_quantized_300x300_coco14_sync_2018_07_18'
+            ),
+            'ssd_mobilenet_v1_ppn_coco':
+            self.Model(
+                'ssd_mobilenet_v1_ppn_coco',
+                'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_ppn_shared_box_predictor_300x300_coco14_sync_2018_07_03.tar.gz',
+                'ssd_mobilenet_v1_ppn_shared_box_predictor_300x300_coco14_sync_2018_07_03'
+            ),
+            'ssd_mobilenet_v1_fpn_coco':
+            self.Model(
+                'ssd_mobilenet_v1_fpn_coco',
+                'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03.tar.gz',
+                'ssd_mobilenet_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03'
+            ),
+            'ssd_mobilenet_v2_coco':
+            self.Model(
+                'ssd_mobilenet_v2_coco',
+                'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v2_coco_2018_03_29.tar.gz',
+                'ssd_mobilenet_v2_coco_2018_03_29',
+            ),
+            'ssdlite_mobilenet_v2_coco':
+            self.Model(
+                'ssdlite_mobilenet_v2_coco',
+                'http://download.tensorflow.org/models/object_detection/ssdlite_mobilenet_v2_coco_2018_05_09.tar.gz',
+                'ssdlite_mobilenet_v2_coco_2018_05_09'),
+            'ssd_inception_v2_coco':
+            self.Model(
+                'ssd_inception_v2_coco',
+                'http://download.tensorflow.org/models/object_detection/ssd_inception_v2_coco_2018_01_28.tar.gz',
+                'ssd_inception_v2_coco_2018_01_28',
+            ),
+            'ssd_resnet_50_fpn_coco':
+            self.Model(
+                'ssd_resnet_50_fpn_coco',
+                'http://download.tensorflow.org/models/object_detection/ssd_resnet50_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03.tar.gz',
+                'ssd_resnet50_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03',
+            ),
+            'faster_rcnn_resnet50_coco':
+            self.Model(
+                'faster_rcnn_resnet50_coco',
+                'http://download.tensorflow.org/models/object_detection/faster_rcnn_resnet50_coco_2018_01_28.tar.gz',
+                'faster_rcnn_resnet50_coco_2018_01_28',
+            ),
+            'faster_rcnn_nas':
+            self.Model(
+                'faster_rcnn_nas',
+                'http://download.tensorflow.org/models/object_detection/faster_rcnn_nas_coco_2018_01_28.tar.gz',
+                'faster_rcnn_nas_coco_2018_01_28',
+            ),
+            'mask_rcnn_resnet50_atrous_coco':
+            self.Model(
+                'mask_rcnn_resnet50_atrous_coco',
+                'http://download.tensorflow.org/models/object_detection/mask_rcnn_resnet50_atrous_coco_2018_01_28.tar.gz',
+                'mask_rcnn_resnet50_atrous_coco_2018_01_28',
+            ),
+            'facessd_mobilenet_v2_quantized_open_image_v4':
+            self.Model(
+                'facessd_mobilenet_v2_quantized_open_image_v4',
+                'http://download.tensorflow.org/models/object_detection/facessd_mobilenet_v2_quantized_320x320_open_image_v4.tar.gz',
+                'facessd_mobilenet_v2_quantized_320x320_open_image_v4')
+        }
+        self.name = model_name
+        self.output_names = output_names
+        self.INPUT_NAME = INPUT_NAME
+        self.BOXES_NAME = BOXES_NAME
+        self.CLASSES_NAME = CLASSES_NAME
+        self.SCORES_NAME = SCORES_NAME
+        self.MASKS_NAME = MASKS_NAME
+        self.NUM_DETECTIONS_NAME = NUM_DETECTIONS_NAME
+        self.PIPELINE_CONFIG_NAME = PIPELINE_CONFIG_NAME
+        self.CHECKPOINT_PREFIX = CHECKPOINT_PREFIX
+        self.FROZEN_GRAPH_NAME = FROZEN_GRAPH_NAME
+        self.frozen_graph = None
+        if self.models.get(self.name):
+            self.url = self.models[self.name].url
+            self.extract_dir = self.models[self.name].extract_dir
+        else:
+            self.url = None
+            self.extract_dir = None
 
-INPUT_NAME = 'image_tensor'
-BOXES_NAME = 'detection_boxes'
-CLASSES_NAME = 'detection_classes'
-SCORES_NAME = 'detection_scores'
-MASKS_NAME = 'detection_masks'
-NUM_DETECTIONS_NAME = 'num_detections'
-FROZEN_GRAPH_NAME = 'frozen_inference_graph.pb'
-PIPELINE_CONFIG_NAME = 'pipeline.config'
-CHECKPOINT_PREFIX = 'model.ckpt'
+    def SetFrozenGraph(self, frozen_graph):
+        self.frozen_graph = frozen_graph
 
-MODELS = {
-    'ssd_mobilenet_v1_coco':
-    Model(
-        'ssd_mobilenet_v1_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_coco_2018_01_28.tar.gz',
-        'ssd_mobilenet_v1_coco_2018_01_28',
-    ),
-    'ssd_mobilenet_v1_0p75_depth_quantized_coco':
-    Model(
-        'ssd_mobilenet_v1_0p75_depth_quantized_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_0.75_depth_quantized_300x300_coco14_sync_2018_07_18.tar.gz',
-        'ssd_mobilenet_v1_0.75_depth_quantized_300x300_coco14_sync_2018_07_18'
-    ),
-    'ssd_mobilenet_v1_ppn_coco':
-    Model(
-        'ssd_mobilenet_v1_ppn_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_ppn_shared_box_predictor_300x300_coco14_sync_2018_07_03.tar.gz',
-        'ssd_mobilenet_v1_ppn_shared_box_predictor_300x300_coco14_sync_2018_07_03'
-    ),
-    'ssd_mobilenet_v1_fpn_coco':
-    Model(
-        'ssd_mobilenet_v1_fpn_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03.tar.gz',
-        'ssd_mobilenet_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03'
-    ),
-    'ssd_mobilenet_v2_coco':
-    Model(
-        'ssd_mobilenet_v2_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v2_coco_2018_03_29.tar.gz',
-        'ssd_mobilenet_v2_coco_2018_03_29',
-    ),
-    'ssdlite_mobilenet_v2_coco':
-    Model(
-        'ssdlite_mobilenet_v2_coco',
-        'http://download.tensorflow.org/models/object_detection/ssdlite_mobilenet_v2_coco_2018_05_09.tar.gz',
-        'ssdlite_mobilenet_v2_coco_2018_05_09'),
-    'ssd_inception_v2_coco':
-    Model(
-        'ssd_inception_v2_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_inception_v2_coco_2018_01_28.tar.gz',
-        'ssd_inception_v2_coco_2018_01_28',
-    ),
-    'ssd_resnet_50_fpn_coco':
-    Model(
-        'ssd_resnet_50_fpn_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_resnet50_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03.tar.gz',
-        'ssd_resnet50_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03',
-    ),
-    'faster_rcnn_resnet50_coco':
-    Model(
-        'faster_rcnn_resnet50_coco',
-        'http://download.tensorflow.org/models/object_detection/faster_rcnn_resnet50_coco_2018_01_28.tar.gz',
-        'faster_rcnn_resnet50_coco_2018_01_28',
-    ),
-    'faster_rcnn_nas':
-    Model(
-        'faster_rcnn_nas',
-        'http://download.tensorflow.org/models/object_detection/faster_rcnn_nas_coco_2018_01_28.tar.gz',
-        'faster_rcnn_nas_coco_2018_01_28',
-    ),
-    'mask_rcnn_resnet50_atrous_coco':
-    Model(
-        'mask_rcnn_resnet50_atrous_coco',
-        'http://download.tensorflow.org/models/object_detection/mask_rcnn_resnet50_atrous_coco_2018_01_28.tar.gz',
-        'mask_rcnn_resnet50_atrous_coco_2018_01_28',
-    ),
-    'facessd_mobilenet_v2_quantized_open_image_v4':
-    Model(
-        'facessd_mobilenet_v2_quantized_open_image_v4',
-        'http://download.tensorflow.org/models/object_detection/facessd_mobilenet_v2_quantized_320x320_open_image_v4.tar.gz',
-        'facessd_mobilenet_v2_quantized_320x320_open_image_v4')
-}
 
 Dataset = namedtuple(
     'Dataset',
@@ -154,7 +181,29 @@ DATASETS = {
 }
 
 
-def download_model(model_name, input_dir=None, output_dir='.'):
+def download_model(
+    model_name,
+    output_masks=False,
+    INPUT_NAME='image_tensor',
+    BOXES_NAME='detection_boxes',
+    CLASSES_NAME='detection_classes',
+    SCORES_NAME='detection_scores',
+    MASKS_NAME='detection_masks',
+    NUM_DETECTIONS_NAME='num_detections',
+    PIPELINE_CONFIG_NAME='pipeline.config',
+    CHECKPOINT_PREFIX='model.ckpt',
+    FROZEN_GRAPH_NAME='frozen_inference_graph.pb',
+    saved_model_dir=None,
+    input_dir=None,
+    output_dir='.',
+    force_nms_cpu=False,
+    replace_relu6=False,
+    remove_assert=False,
+    override_nms_score_threshold=None,
+    override_resizer_shape=None,
+    tmp_dir='.optimize_model_tmp_dir',
+    remove_tmp_dir=True,
+    output_path=None):
     """Downloads a model from the TensorFlow Object Detection API
 
     Downloads a model from the TensorFlow Object Detection API to a specific
@@ -173,48 +222,170 @@ def download_model(model_name, input_dir=None, output_dir='.'):
         output_dir: A string representing the directory to download the model
             under.  A directory for the specified model will be created at
             ``output_dir/<model_directory>``.
+        force_nms_cpu: A boolean indicating whether to place NMS operations on
+            the CPU.
+        replace_relu6: A boolean indicating whether to replace relu6(x)
+            operations with relu(x) - relu(x-6).
+        remove_assert: A boolean indicating whether to remove Assert
+            operations from the graph.
+        override_nms_score_threshold: An optional float representing
+            a NMS score threshold to override that specified in the object
+            detection configuration file.
+        override_resizer_shape: An optional list/tuple of integers
+            representing a fixed shape to override the default image resizer
+            specified in the object detection configuration file.
+        tmp_dir: A string representing a directory for temporary files.  This
+            directory will be created and removed by this function and should
+            not already exist.  If the directory exists, an error will be
+            thrown.
+        remove_tmp_dir: A boolean indicating whether we should remove the
+            tmp_dir or throw error.
+        output_path: An optional string representing the path to save the
+            optimized GraphDef to.
+
     Returns
     -------
-        config_path: A string representing the path to the object detection
-            pipeline configuration file of the downloaded model.
-        checkpoint_path: A string representing the path to the object detection
-            model checkpoint.
+        A GraphDef representing the optimized model.
     """
-    global MODELS
-
-    model_name
-
-    model = MODELS[model_name]
-
-    # make output directory if it doesn't exist
-    subprocess.call(['mkdir', '-p', output_dir])
-
-    tar_file = os.path.join(output_dir, os.path.basename(model.url))
-
-    config_path = os.path.join(output_dir, model.extract_dir,
-                               PIPELINE_CONFIG_NAME)
-    checkpoint_path = os.path.join(output_dir, model.extract_dir,
-                                   CHECKPOINT_PREFIX)
-
-    if input_dir:
-        extract_dir = os.path.join(input_dir, model.extract_dir)
-    if input_dir and os.path.exists(extract_dir):
-        print('Found model at: %s' % extract_dir)
-        print('Copying model to: %s' % output_dir)
-        subprocess.call(['cp', '-r', extract_dir, output_dir])
+    if output_masks:
+        output_names=[BOXES_NAME, CLASSES_NAME, SCORES_NAME, MASKS_NAME, NUM_DETECTIONS_NAME]
     else:
-        print('Downloading model from: %s' % model.url)
-        subprocess.call(['wget', '-q', model.url, '-O', tar_file])
-        subprocess.call(['tar', '-xzf', tar_file, '-C', output_dir])
+        output_names=[BOXES_NAME, CLASSES_NAME, SCORES_NAME, NUM_DETECTIONS_NAME]
+    model = Model(
+        model_name=model_name,
+        output_names=output_names,
+        INPUT_NAME=INPUT_NAME,
+        BOXES_NAME=BOXES_NAME,
+        CLASSES_NAME=CLASSES_NAME,
+        SCORES_NAME=SCORES_NAME,
+        MASKS_NAME=MASKS_NAME,
+        NUM_DETECTIONS_NAME=NUM_DETECTIONS_NAME,
+        PIPELINE_CONFIG_NAME=PIPELINE_CONFIG_NAME,
+        CHECKPOINT_PREFIX=CHECKPOINT_PREFIX,
+        FROZEN_GRAPH_NAME=FROZEN_GRAPH_NAME)
 
-        # hack fix to handle mobilenet_v2 config bug
-        subprocess.call(['sed', '-i', '/batch_norm_trainable/d', config_path])
+    if saved_model_dir:
+        with tf.Session() as sess:
+            tf.saved_model.loader.load (
+                    sess, [tf.saved_model.tag_constants.SERVING], saved_model_dir)
+            original_frozen_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, sess.graph.as_graph_def(), model.output_names)
+            original_frozen_graph = optimize_for_inference_lib.optimize_for_inference(
+                    original_frozen_graph,
+                    [model.INPUT_NAME],
+                    model.output_names,
+                    [dtypes.uint8.as_datatype_enum],
+                    True)
+            # Manually define the rank of input_shape
+            input_shape = tf.TensorShape([None, None, None]) 
+            for node in original_frozen_graph.node:
+                if model.INPUT_NAME == node.name:
+                    # node.attr['_output_shapes'].list.shape.extend([input_shape.as_proto()])
+                    node.attr['shape'].shape.CopyFrom(input_shape.as_proto())
+                    break
+        # Make a deep copy
+        frozen_graph = copy.deepcopy(original_frozen_graph)
+    else:
+        # make output directory if it doesn't exist
+        subprocess.call(['mkdir', '-p', output_dir])
 
-    return config_path, checkpoint_path
+        tar_file = os.path.join(output_dir, os.path.basename(model.url))
+
+        config_path = os.path.join(output_dir, model.extract_dir,
+                                   model.PIPELINE_CONFIG_NAME)
+        checkpoint_path = os.path.join(output_dir, model.extract_dir,
+                                       model.CHECKPOINT_PREFIX)
+
+        if input_dir:
+            extract_dir = os.path.join(input_dir, model.extract_dir)
+        if input_dir and os.path.exists(extract_dir):
+            print('Found model at: %s' % extract_dir)
+            print('Copying model to: %s' % output_dir)
+            subprocess.call(['cp', '-r', extract_dir, output_dir])
+        else:
+            print('Downloading model from: %s' % model.url)
+            subprocess.call(['wget', '-q', model.url, '-O', tar_file])
+            subprocess.call(['tar', '-xzf', tar_file, '-C', output_dir])
+
+            # hack fix to handle mobilenet_v2 config bug
+            subprocess.call(['sed', '-i', '/batch_norm_trainable/d', config_path])
+
+        if os.path.exists(tmp_dir):
+            if not remove_tmp_dir:
+                raise RuntimeError(
+                    'Cannot create temporary directory, path exists: %s' % tmp_dir)
+            subprocess.call(['rm', '-rf', tmp_dir])
+
+        # load config from file
+        config = pipeline_pb2.TrainEvalPipelineConfig()
+        with open(config_path, 'r') as f:
+            text_format.Merge(f.read(), config, allow_unknown_extension=True)
+
+        # override some config parameters
+        if config.model.HasField('ssd'):
+            config.model.ssd.feature_extractor.override_base_feature_extractor_hyperparams = True
+            if override_nms_score_threshold is not None:
+                config.model.ssd.post_processing.batch_non_max_suppression.score_threshold = override_nms_score_threshold
+            if override_resizer_shape is not None:
+                config.model.ssd.image_resizer.fixed_shape_resizer.height = override_resizer_shape[
+                    0]
+                config.model.ssd.image_resizer.fixed_shape_resizer.width = override_resizer_shape[
+                    1]
+        elif config.model.HasField('faster_rcnn'):
+            if override_nms_score_threshold is not None:
+                config.model.faster_rcnn.second_stage_post_processing.batch_non_max_suppression.score_threshold = override_nms_score_threshold
+            if override_resizer_shape is not None:
+                config.model.faster_rcnn.image_resizer.fixed_shape_resizer.height = override_resizer_shape[
+                    0]
+                config.model.faster_rcnn.image_resizer.fixed_shape_resizer.width = override_resizer_shape[
+                    1]
+
+        tf_config = tf.ConfigProto()
+        tf_config.gpu_options.allow_growth = True
+
+        # export inference graph to file (initial), this will create tmp_dir
+        with tf.Session(config=tf_config):
+            with tf.Graph().as_default():
+                exporter.export_inference_graph(
+                    model.INPUT_NAME,
+                    config,
+                    checkpoint_path,
+                    tmp_dir,
+                    input_shape=[None, None, None, 3])
+
+        # read frozen graph from file
+        frozen_graph_path = os.path.join(tmp_dir, model.FROZEN_GRAPH_NAME)
+        frozen_graph = tf.GraphDef()
+        with open(frozen_graph_path, 'rb') as f:
+            frozen_graph.ParseFromString(f.read())
+
+        # apply graph modifications
+        if force_nms_cpu:
+            frozen_graph = f_force_nms_cpu(frozen_graph)
+        if replace_relu6:
+            frozen_graph = f_replace_relu6(frozen_graph)
+        if remove_assert:
+            frozen_graph = f_remove_assert(frozen_graph)
+
+        # re-enable variable batch size, this was forced to max
+        # batch size during export to enable TensorRT optimization
+        for node in frozen_graph.node:
+            if model.INPUT_NAME == node.name:
+                node.attr['shape'].shape.dim[0].size = -1
+
+        # write optimized model to disk
+        if output_path is not None:
+            with open(output_path, 'wb') as f:
+                f.write(frozen_graph.SerializeToString())
+
+        # remove temporary directory
+        subprocess.call(['rm', '-rf', tmp_dir])
+
+    model.SetFrozenGraph(frozen_graph=frozen_graph)
+
+    return model
 
 
-def optimize_model(config_path,
-                   checkpoint_path,
+def optimize_model(model,
                    use_trt=True,
                    force_nms_cpu=False,
                    replace_relu6=False,
@@ -242,25 +413,9 @@ def optimize_model(config_path,
 
     Args
     ----
-        config_path: A string representing the path of the object detection
-            pipeline config file.
-        checkpoint_path: A string representing the path of the object
-            detection model checkpoint.
         use_trt: A boolean representing whether to optimize with TensorRT. If
             False, regular TensorFlow will be used but other optimizations
             (like NMS device placement) will still be applied.
-        force_nms_cpu: A boolean indicating whether to place NMS operations on
-            the CPU.
-        replace_relu6: A boolean indicating whether to replace relu6(x)
-            operations with relu(x) - relu(x-6).
-        remove_assert: A boolean indicating whether to remove Assert
-            operations from the graph.
-        override_nms_score_threshold: An optional float representing
-            a NMS score threshold to override that specified in the object
-            detection configuration file.
-        override_resizer_shape: An optional list/tuple of integers
-            representing a fixed shape to override the default image resizer
-            specified in the object detection configuration file.
         max_batch_size: An integer representing the max batch size to use for
             TensorRT optimization.
         precision_mode: A string representing the precision mode to use for
@@ -300,70 +455,16 @@ def optimize_model(config_path,
                 'Cannot create temporary directory, path exists: %s' % tmp_dir)
         subprocess.call(['rm', '-rf', tmp_dir])
 
-    # load config from file
-    config = pipeline_pb2.TrainEvalPipelineConfig()
-    with open(config_path, 'r') as f:
-        text_format.Merge(f.read(), config, allow_unknown_extension=True)
-
-    # override some config parameters
-    if config.model.HasField('ssd'):
-        config.model.ssd.feature_extractor.override_base_feature_extractor_hyperparams = True
-        if override_nms_score_threshold is not None:
-            config.model.ssd.post_processing.batch_non_max_suppression.score_threshold = override_nms_score_threshold
-        if override_resizer_shape is not None:
-            config.model.ssd.image_resizer.fixed_shape_resizer.height = override_resizer_shape[
-                0]
-            config.model.ssd.image_resizer.fixed_shape_resizer.width = override_resizer_shape[
-                1]
-    elif config.model.HasField('faster_rcnn'):
-        if override_nms_score_threshold is not None:
-            config.model.faster_rcnn.second_stage_post_processing.batch_non_max_suppression.score_threshold = override_nms_score_threshold
-        if override_resizer_shape is not None:
-            config.model.faster_rcnn.image_resizer.fixed_shape_resizer.height = override_resizer_shape[
-                0]
-            config.model.faster_rcnn.image_resizer.fixed_shape_resizer.width = override_resizer_shape[
-                1]
-
-    tf_config = tf.ConfigProto()
-    tf_config.gpu_options.allow_growth = True
-
-    # export inference graph to file (initial), this will create tmp_dir
-    with tf.Session(config=tf_config):
-        with tf.Graph().as_default():
-            exporter.export_inference_graph(
-                INPUT_NAME,
-                config,
-                checkpoint_path,
-                tmp_dir,
-                input_shape=[max_batch_size, None, None, 3])
-
-    # read frozen graph from file
-    frozen_graph_path = os.path.join(tmp_dir, FROZEN_GRAPH_NAME)
-    frozen_graph = tf.GraphDef()
-    with open(frozen_graph_path, 'rb') as f:
-        frozen_graph.ParseFromString(f.read())
-
-    # apply graph modifications
-    if force_nms_cpu:
-        frozen_graph = f_force_nms_cpu(frozen_graph)
-    if replace_relu6:
-        frozen_graph = f_replace_relu6(frozen_graph)
-    if remove_assert:
-        frozen_graph = f_remove_assert(frozen_graph)
-
-    # get input names
-    output_names = [BOXES_NAME, CLASSES_NAME, SCORES_NAME, NUM_DETECTIONS_NAME]
-
     # optionally perform TensorRT optimization
     if use_trt:
         runtimes = []
         with tf.Graph().as_default() as tf_graph:
             with tf.Session(config=tf_config) as tf_sess:
-                graph_size = len(frozen_graph.SerializeToString())
-                num_nodes = len(frozen_graph.node)
+                graph_size = len(model.frozen_graph.SerializeToString())
+                num_nodes = len(model.frozen_graph.node)
                 start_time = time.time()
-                frozen_graph = trt.create_inference_graph(
-                    input_graph_def=frozen_graph,
+                model.frozen_graph = trt.create_inference_graph(
+                    input_graph_def=model.frozen_graph,
                     outputs=output_names,
                     max_batch_size=max_batch_size,
                     max_workspace_size_bytes=max_workspace_size_bytes,
@@ -374,10 +475,10 @@ def optimize_model(config_path,
                 end_time = time.time()
                 print("graph_size(MB)(native_tf): %.1f" % (float(graph_size)/(1<<20)))
                 print("graph_size(MB)(trt): %.1f" %
-                    (float(len(frozen_graph.SerializeToString()))/(1<<20)))
+                    (float(len(model.frozen_graph.SerializeToString()))/(1<<20)))
                 print("num_nodes(native_tf): %d" % num_nodes)
-                print("num_nodes(tftrt_total): %d" % len(frozen_graph.node))
-                print("num_nodes(trt_only): %d" % len([1 for n in frozen_graph.node if str(n.op)=='TRTEngineOp']))                
+                print("num_nodes(tftrt_total): %d" % len(model.frozen_graph.node))
+                print("num_nodes(trt_only): %d" % len([1 for n in model.frozen_graph.node if str(n.op)=='TRTEngineOp']))                
                 print("time(s) (trt_conversion): %.4f" % (end_time - start_time))
 
                 # perform calibration for int8 precision
@@ -386,7 +487,7 @@ def optimize_model(config_path,
                     if calib_images_dir is None:
                         raise ValueError('calib_images_dir must be provided for int8 optimization.')
 
-                    tf.import_graph_def(frozen_graph, name='')
+                    tf.import_graph_def(model.frozen_graph, name='')
                     tf_input = tf_graph.get_tensor_by_name(INPUT_NAME + ':0')
                     tf_boxes = tf_graph.get_tensor_by_name(BOXES_NAME + ':0')
                     tf_classes = tf_graph.get_tensor_by_name(CLASSES_NAME + ':0')
@@ -418,23 +519,23 @@ def optimize_model(config_path,
                                 (len(image_path) + max_batch_size - 1) / max_batch_size,
                                 np.mean(runtimes) * 1000))
 
-                    frozen_graph = trt.calib_graph_to_infer_graph(frozen_graph)
+                    model.frozen_graph = trt.calib_graph_to_infer_graph(model.frozen_graph)
 
     # re-enable variable batch size, this was forced to max
     # batch size during export to enable TensorRT optimization
-    for node in frozen_graph.node:
-        if INPUT_NAME == node.name:
+    for node in model.frozen_graph.node:
+        if model.INPUT_NAME == node.name:
             node.attr['shape'].shape.dim[0].size = -1
 
     # write optimized model to disk
     if output_path is not None:
         with open(output_path, 'wb') as f:
-            f.write(frozen_graph.SerializeToString())
+            f.write(model.frozen_graph.SerializeToString())
 
     # remove temporary directory
     subprocess.call(['rm', '-rf', tmp_dir])
 
-    return frozen_graph
+    return model
 
 
 def download_dataset(dataset_name, output_dir='.'):
@@ -487,7 +588,7 @@ def download_dataset(dataset_name, output_dir='.'):
     return images_dir, annotation_path
 
 
-def benchmark_model(frozen_graph,
+def benchmark_model(model,
                     images_dir,
                     annotation_path,
                     batch_size=1,
@@ -554,12 +655,12 @@ def benchmark_model(frozen_graph,
         image_ids = image_ids[0:num_images]
 
     # load frozen graph from file if string, otherwise must be GraphDef
-    if isinstance(frozen_graph, str):
-        frozen_graph_path = frozen_graph
-        frozen_graph = tf.GraphDef()
-        with open(frozen_graph_path, 'rb') as f:
-            frozen_graph.ParseFromString(f.read())
-    elif not isinstance(frozen_graph, tf.GraphDef):
+    if isinstance(model.frozen_graph, str):
+        model.frozen_graph_path = model.frozen_graph
+        model.frozen_graph = tf.GraphDef()
+        with open(model.frozen_graph_path, 'rb') as f:
+            model.frozen_graph.ParseFromString(f.read())
+    elif not isinstance(model.frozen_graph, tf.GraphDef):
         raise TypeError('Expected frozen_graph to be GraphDef or str')
 
     tf_config = tf.ConfigProto()
@@ -571,13 +672,10 @@ def benchmark_model(frozen_graph,
 
     with tf.Graph().as_default() as tf_graph:
         with tf.Session(config=tf_config) as tf_sess:
-            tf.import_graph_def(frozen_graph, name='')
-            tf_input = tf_graph.get_tensor_by_name(INPUT_NAME + ':0')
-            tf_boxes = tf_graph.get_tensor_by_name(BOXES_NAME + ':0')
-            tf_classes = tf_graph.get_tensor_by_name(CLASSES_NAME + ':0')
-            tf_scores = tf_graph.get_tensor_by_name(SCORES_NAME + ':0')
-            tf_num_detections = tf_graph.get_tensor_by_name(
-                NUM_DETECTIONS_NAME + ':0')
+            tf.import_graph_def(model.frozen_graph, name='')
+            tf_input = tf_graph.get_tensor_by_name(model.INPUT_NAME + ':0')
+            tf_outputs = [tf_graph.get_tensor_by_name(
+                output_name + ':0') for output_name in model.output_names]
 
             # load batches from coco dataset
             for image_idx in range(0, num_images, batch_size):
@@ -601,15 +699,13 @@ def benchmark_model(frozen_graph,
 
                 # run num_warmup_iterations outside of timing
                 if image_idx < num_warmup_iterations:
-                    boxes, classes, scores, num_detections = tf_sess.run(
-                        [tf_boxes, tf_classes, tf_scores, tf_num_detections],
-                        feed_dict={tf_input: batch_images})
+                    boxes, classes, scores, num_detections, _ = tf_sess.run(
+                        tf_outputs, feed_dict={tf_input: batch_images})
                 else:
                     # execute model and compute time difference
                     t0 = time.time()
-                    boxes, classes, scores, num_detections = tf_sess.run(
-                        [tf_boxes, tf_classes, tf_scores, tf_num_detections],
-                        feed_dict={tf_input: batch_images})
+                    boxes, classes, scores, num_detections, _ = tf_sess.run(
+                        tf_outputs, feed_dict={tf_input: batch_images})
                     t1 = time.time()
 
                     # log runtime and image count

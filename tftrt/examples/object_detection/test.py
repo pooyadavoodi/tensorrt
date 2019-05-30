@@ -68,17 +68,16 @@ def test(test_config_path):
         print(json.dumps(test_config, sort_keys=True, indent=4))
 
     # download model or use cached
-    config_path, checkpoint_path = download_model(**test_config['source_model'])
+    model = download_model(**test_config['source_model'])
 
     # optimize model using source model
-    frozen_graph = optimize_model(
-        config_path=config_path,
-        checkpoint_path=checkpoint_path,
+    model = optimize_model(
+        model=model,
         **test_config['optimization_config'])
 
     # benchmark optimized model
     statistics = benchmark_model(
-        frozen_graph=frozen_graph,
+        model=model,
         **test_config['benchmark_config'])
 
     # print some statistics to command line
