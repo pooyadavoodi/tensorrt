@@ -1,6 +1,6 @@
-# Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
 #
-# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,630 +15,413 @@
 # limitations under the License.
 # =============================================================================
 
-
-from __future__ import absolute_import
-
-import tensorflow as tf
-from tensorflow.python.compiler.tensorrt import trt_convert as trt
-import pdb
-
-from collections import namedtuple
-from PIL import Image
-import numpy as np
+import argparse
+import os
 import time
+import pprint
+from functools import partial
+import numpy as np
 import json
 import subprocess
-import os
-import glob
-
-from .graph_utils import force_nms_cpu as f_force_nms_cpu
-from .graph_utils import replace_relu6 as f_replace_relu6
-from .graph_utils import remove_assert as f_remove_assert
-
-from google.protobuf import text_format
-from object_detection.protos import pipeline_pb2, image_resizer_pb2
-from object_detection import exporter
-
-Model = namedtuple('Model', ['name', 'url', 'extract_dir'])
-
-INPUT_NAME = 'image_tensor'
-BOXES_NAME = 'detection_boxes'
-CLASSES_NAME = 'detection_classes'
-SCORES_NAME = 'detection_scores'
-MASKS_NAME = 'detection_masks'
-NUM_DETECTIONS_NAME = 'num_detections'
-FROZEN_GRAPH_NAME = 'frozen_inference_graph.pb'
-PIPELINE_CONFIG_NAME = 'pipeline.config'
-CHECKPOINT_PREFIX = 'model.ckpt'
-
-MODELS = {
-    'ssd_mobilenet_v1_coco':
-    Model(
-        'ssd_mobilenet_v1_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_coco_2018_01_28.tar.gz',
-        'ssd_mobilenet_v1_coco_2018_01_28',
-    ),
-    'ssd_mobilenet_v1_0p75_depth_quantized_coco':
-    Model(
-        'ssd_mobilenet_v1_0p75_depth_quantized_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_0.75_depth_quantized_300x300_coco14_sync_2018_07_18.tar.gz',
-        'ssd_mobilenet_v1_0.75_depth_quantized_300x300_coco14_sync_2018_07_18'
-    ),
-    'ssd_mobilenet_v1_ppn_coco':
-    Model(
-        'ssd_mobilenet_v1_ppn_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_ppn_shared_box_predictor_300x300_coco14_sync_2018_07_03.tar.gz',
-        'ssd_mobilenet_v1_ppn_shared_box_predictor_300x300_coco14_sync_2018_07_03'
-    ),
-    'ssd_mobilenet_v1_fpn_coco':
-    Model(
-        'ssd_mobilenet_v1_fpn_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03.tar.gz',
-        'ssd_mobilenet_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03'
-    ),
-    'ssd_mobilenet_v2_coco':
-    Model(
-        'ssd_mobilenet_v2_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v2_coco_2018_03_29.tar.gz',
-        'ssd_mobilenet_v2_coco_2018_03_29',
-    ),
-    'ssdlite_mobilenet_v2_coco':
-    Model(
-        'ssdlite_mobilenet_v2_coco',
-        'http://download.tensorflow.org/models/object_detection/ssdlite_mobilenet_v2_coco_2018_05_09.tar.gz',
-        'ssdlite_mobilenet_v2_coco_2018_05_09'),
-    'ssd_inception_v2_coco':
-    Model(
-        'ssd_inception_v2_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_inception_v2_coco_2018_01_28.tar.gz',
-        'ssd_inception_v2_coco_2018_01_28',
-    ),
-    'ssd_resnet_50_fpn_coco':
-    Model(
-        'ssd_resnet_50_fpn_coco',
-        'http://download.tensorflow.org/models/object_detection/ssd_resnet50_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03.tar.gz',
-        'ssd_resnet50_v1_fpn_shared_box_predictor_640x640_coco14_sync_2018_07_03',
-    ),
-    'faster_rcnn_resnet50_coco':
-    Model(
-        'faster_rcnn_resnet50_coco',
-        'http://download.tensorflow.org/models/object_detection/faster_rcnn_resnet50_coco_2018_01_28.tar.gz',
-        'faster_rcnn_resnet50_coco_2018_01_28',
-    ),
-    'faster_rcnn_nas':
-    Model(
-        'faster_rcnn_nas',
-        'http://download.tensorflow.org/models/object_detection/faster_rcnn_nas_coco_2018_01_28.tar.gz',
-        'faster_rcnn_nas_coco_2018_01_28',
-    ),
-    'mask_rcnn_resnet50_atrous_coco':
-    Model(
-        'mask_rcnn_resnet50_atrous_coco',
-        'http://download.tensorflow.org/models/object_detection/mask_rcnn_resnet50_atrous_coco_2018_01_28.tar.gz',
-        'mask_rcnn_resnet50_atrous_coco_2018_01_28',
-    ),
-    'facessd_mobilenet_v2_quantized_open_image_v4':
-    Model(
-        'facessd_mobilenet_v2_quantized_open_image_v4',
-        'http://download.tensorflow.org/models/object_detection/facessd_mobilenet_v2_quantized_320x320_open_image_v4.tar.gz',
-        'facessd_mobilenet_v2_quantized_320x320_open_image_v4')
-}
-
-Dataset = namedtuple(
-    'Dataset',
-    ['images_url', 'images_dir', 'annotation_url', 'annotation_path'])
-
-DATASETS = {
-    'val2014':
-    Dataset(
-        'http://images.cocodataset.org/zips/val2014.zip', 'val2014',
-        'http://images.cocodataset.org/annotations/annotations_trainval2014.zip',
-        'annotations/instances_val2014.json'),
-    'train2014':
-    Dataset(
-        'http://images.cocodataset.org/zips/train2014.zip', 'train2014',
-        'http://images.cocodataset.org/annotations/annotations_trainval2014.zip',
-        'annotations/instances_train2014.json'),
-    'val2017':
-    Dataset(
-        'http://images.cocodataset.org/zips/val2017.zip', 'val2017',
-        'http://images.cocodataset.org/annotations/annotations_trainval2017.zip',
-        'annotations/instances_val2017.json'),
-    'train2017':
-    Dataset(
-        'http://images.cocodataset.org/zips/train2017.zip', 'train2017',
-        'http://images.cocodataset.org/annotations/annotations_trainval2017.zip',
-        'annotations/instances_train2017.json')
-}
+import tensorflow as tf
+from tensorflow.python.compiler.tensorrt import trt_convert as trt
+from tensorflow.python.saved_model import signature_constants
+from tensorflow.python.saved_model import tag_constants
+from tensorflow.python.framework import convert_to_constants
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
 
 
-def download_model(model_name, output_dir='.'):
-    """Downloads a model from the TensorFlow Object Detection API
-
-    Downloads a model from the TensorFlow Object Detection API to a specific
-    output directory.  The download will be skipped if an existing directory
-    for the selected model already found under output_dir.
-
-    Args
-    ----
-        model_name: A string representing the model to download.  This must be
-            one of the keys in the module variable
-            ``trt_samples.object_detection.MODELS``.
-        output_dir: A string representing the directory to download the model
-            under.  A directory for the specified model will be created at
-            ``output_dir/<model_directory>``.  If output_dir/<model_directory>
-            already exists, then the download will be skipped.
-
-    Returns
-    -------
-        config_path: A string representing the path to the object detection
-            pipeline configuration file of the downloaded model.
-        checkpoint_path: A string representing the path to the object detection
-            model checkpoint.
-    """
-    global MODELS
-
-    model_name
-
-    model = MODELS[model_name]
-
-    # make output directory if it doesn't exist
-    subprocess.call(['mkdir', '-p', output_dir])
-
-    tar_file = os.path.join(output_dir, os.path.basename(model.url))
-
-    config_path = os.path.join(output_dir, model.extract_dir,
-                               PIPELINE_CONFIG_NAME)
-    checkpoint_path = os.path.join(output_dir, model.extract_dir,
-                                   CHECKPOINT_PREFIX)
-
-    extract_dir = os.path.join(output_dir, model.extract_dir)
-    if os.path.exists(extract_dir):
-        print('Using cached model found at: %s' % extract_dir)
-    else:
-        subprocess.call(['wget', '-q', model.url, '-O', tar_file])
-        subprocess.call(['tar', '-xzf', tar_file, '-C', output_dir])
-
-        # hack fix to handle mobilenet_v2 config bug
-        subprocess.call(['sed', '-i', '/batch_norm_trainable/d', config_path])
-
-    return config_path, checkpoint_path
-
-
-def optimize_model(config_path,
-                   checkpoint_path,
-                   use_trt=True,
-                   force_nms_cpu=True,
-                   replace_relu6=True,
-                   remove_assert=True,
-                   override_nms_score_threshold=None,
-                   override_resizer_shape=None,
-                   max_batch_size=1,
-                   precision_mode='FP32',
-                   minimum_segment_size=2,
-                   max_workspace_size_bytes=1 << 32,
-                   maximum_cached_engines=100,
-                   calib_images_dir=None,
-                   num_calib_images=None,
-                   calib_image_shape=None,
-                   tmp_dir='.optimize_model_tmp_dir',
-                   remove_tmp_dir=True,
-                   output_path=None,
-                   display_every=100):
-    """Optimizes an object detection model using TensorRT
-
-    Optimizes an object detection model using TensorRT.  This method also
-    performs pre-tensorrt optimizations specific to the TensorFlow object
-    detection API models.  Please see the list of arguments for other
-    optimization parameters.
-
-    Args
-    ----
-        config_path: A string representing the path of the object detection
-            pipeline config file.
-        checkpoint_path: A string representing the path of the object
-            detection model checkpoint.
-        use_trt: A boolean representing whether to optimize with TensorRT. If
-            False, regular TensorFlow will be used but other optimizations
-            (like NMS device placement) will still be applied.
-        force_nms_cpu: A boolean indicating whether to place NMS operations on
-            the CPU.
-        replace_relu6: A boolean indicating whether to replace relu6(x)
-            operations with relu(x) - relu(x-6).
-        remove_assert: A boolean indicating whether to remove Assert
-            operations from the graph.
-        override_nms_score_threshold: An optional float representing
-            a NMS score threshold to override that specified in the object
-            detection configuration file.
-        override_resizer_shape: An optional list/tuple of integers
-            representing a fixed shape to override the default image resizer
-            specified in the object detection configuration file.
-        max_batch_size: An integer representing the max batch size to use for
-            TensorRT optimization.
-        precision_mode: A string representing the precision mode to use for
-            TensorRT optimization.  Must be one of 'FP32', 'FP16', or 'INT8'.
-        minimum_segment_size: An integer representing the minimum segment size
-            to use for TensorRT graph segmentation.
-        max_workspace_size_bytes: An integer representing the max workspace
-            size for TensorRT optimization.
-        maximum_cached_engines: An integer represenging the number of TRT engines
-            that can be stored in the cache.
-        calib_images_dir: A string representing a directory containing images to
-            use for int8 calibration. 
-        num_calib_images: An integer representing the number of calibration 
-            images to use.  If None, will use all images in directory.
-        calib_image_shape: A tuple of integers representing the height, 
-            width that images will be resized to for calibration. 
-        tmp_dir: A string representing a directory for temporary files.  This
-            directory will be created and removed by this function and should
-            not already exist.  If the directory exists, an error will be
-            thrown.
-        remove_tmp_dir: A boolean indicating whether we should remove the
-            tmp_dir or throw error.
-        output_path: An optional string representing the path to save the
-            optimized GraphDef to.
-        display_every: print log for calibration every display_every iteration
-
-    Returns
-    -------
-        A GraphDef representing the optimized model.
-    """
-    if max_batch_size > 1 and calib_image_shape is None:
-        raise RuntimeError(
-            'Fixed calibration image shape must be provided for max_batch_size > 1')
-    if os.path.exists(tmp_dir):
-        if not remove_tmp_dir:
-            raise RuntimeError(
-                'Cannot create temporary directory, path exists: %s' % tmp_dir)
-        subprocess.call(['rm', '-rf', tmp_dir])
-
-    # load config from file
-    config = pipeline_pb2.TrainEvalPipelineConfig()
-    with open(config_path, 'r') as f:
-        text_format.Merge(f.read(), config, allow_unknown_extension=True)
-
-    # override some config parameters
-    if config.model.HasField('ssd'):
-        config.model.ssd.feature_extractor.override_base_feature_extractor_hyperparams = True
-        if override_nms_score_threshold is not None:
-            config.model.ssd.post_processing.batch_non_max_suppression.score_threshold = override_nms_score_threshold
-        if override_resizer_shape is not None:
-            config.model.ssd.image_resizer.fixed_shape_resizer.height = override_resizer_shape[
-                0]
-            config.model.ssd.image_resizer.fixed_shape_resizer.width = override_resizer_shape[
-                1]
-    elif config.model.HasField('faster_rcnn'):
-        if override_nms_score_threshold is not None:
-            config.model.faster_rcnn.second_stage_post_processing.batch_non_max_suppression.score_threshold = override_nms_score_threshold
-        if override_resizer_shape is not None:
-            config.model.faster_rcnn.image_resizer.fixed_shape_resizer.height = override_resizer_shape[
-                0]
-            config.model.faster_rcnn.image_resizer.fixed_shape_resizer.width = override_resizer_shape[
-                1]
-
-    tf_config = tf.ConfigProto()
-    tf_config.gpu_options.allow_growth = True
-
-    # export inference graph to file (initial), this will create tmp_dir
-    with tf.Session(config=tf_config):
-        with tf.Graph().as_default():
-            exporter.export_inference_graph(
-                INPUT_NAME,
-                config,
-                checkpoint_path,
-                tmp_dir,
-                input_shape=[max_batch_size, None, None, 3])
-
-    # read frozen graph from file
-    frozen_graph_path = os.path.join(tmp_dir, FROZEN_GRAPH_NAME)
-    frozen_graph = tf.GraphDef()
-    with open(frozen_graph_path, 'rb') as f:
-        frozen_graph.ParseFromString(f.read())
-
-    # apply graph modifications
-    if force_nms_cpu:
-        frozen_graph = f_force_nms_cpu(frozen_graph)
-    if replace_relu6:
-        frozen_graph = f_replace_relu6(frozen_graph)
-    if remove_assert:
-        frozen_graph = f_remove_assert(frozen_graph)
-
-    # get input names
-    output_names = [BOXES_NAME, CLASSES_NAME, SCORES_NAME, NUM_DETECTIONS_NAME]
-
-    # optionally perform TensorRT optimization
-    if use_trt:
-        converter = trt.TrtGraphConverter(
-            input_graph_def=frozen_graph,
-            nodes_blacklist=output_names,
-            max_batch_size=max_batch_size,
-            max_workspace_size_bytes=max_workspace_size_bytes,
-            precision_mode=precision_mode,
-            minimum_segment_size=minimum_segment_size,
-            is_dynamic_op=True,
-            maximum_cached_engines=maximum_cached_engines)
-        frozen_graph = converter.convert()
-        # perform calibration for int8 precision
-        if precision_mode == 'INT8':
-            # get calibration images
-            if calib_images_dir is None:
-                raise ValueError('calib_images_dir must be provided for int8 optimization.')
-            image_paths = glob.glob(os.path.join(calib_images_dir, '*.jpg'))
-            if len(image_paths) == 0:
-                raise ValueError('No images were found in calib_images_dir for int8 calibration.')
-            image_paths = image_paths[0:num_calib_images]
-            num_batches = len(image_paths) // max_batch_size
-
-            def feed_dict_fn():
-                # read batch of images
-                batch_images = []
-                for image_path in image_paths[feed_dict_fn.index:feed_dict_fn.index+max_batch_size]:
-                    image = _read_image(image_path, calib_image_shape)           
-                    batch_images.append(image)
-                feed_dict_fn.index += max_batch_size
-                return {INPUT_NAME+':0': np.array(batch_images)}
-            feed_dict_fn.index = 0
-
-            print('Calibrating INT8...')
-            start_time = time.time()
-            frozen_graph = converter.calibrate(
-                fetch_names=[x + ':0' for x in output_names],
-                num_runs=num_batches,
-                feed_dict_fn=feed_dict_fn)
-            calibration_time = time.time() - start_time
-            print('Finished INT8 calibration in ', calibration_time, ' seconds.')
-
-    # re-enable variable batch size, this was forced to max
-    # batch size during export to enable TensorRT optimization
-    for node in frozen_graph.node:
-        if INPUT_NAME == node.name:
-            node.attr['shape'].shape.dim[0].size = -1
-
-    # write optimized model to disk
-    if output_path is not None:
-        with open(output_path, 'wb') as f:
-            f.write(frozen_graph.SerializeToString())
-
-    # remove temporary directory
-    subprocess.call(['rm', '-rf', tmp_dir])
-
-    return frozen_graph
-
-
-def download_dataset(dataset_name, output_dir='.'):
-    """Downloads a COCO dataset
-
-    Downloads a COCO dataset to the specified output directory.  A new
-    directory corresponding to the specified dataset will be created under
-    output_dir.  This directory will contain the images of the dataset.
-
-    Args
-    ----
-        dataset_name: A string representing the name of the dataset, it must
-            be one of the keys in trt_samples.object_detection.DATASETS.
-
-    Returns
-    -------
-        images_dir: A string representing the path of the directory containing
-            images of the dataset.
-        annotation_path: A string representing the path of the COCO annotation
-            file for the dataset.
-    """
-    global DATASETS
-
-    dataset = DATASETS[dataset_name]
-
-    subprocess.call(['mkdir', '-p', output_dir])
-
-    images_dir = os.path.join(output_dir, dataset.images_dir)
-    images_zip_file = os.path.join(output_dir,
-                                   os.path.basename(dataset.images_url))
-    annotation_path = os.path.join(output_dir, dataset.annotation_path)
-    annotation_zip_file = os.path.join(
-        output_dir, os.path.basename(dataset.annotation_url))
-
-    # download or use cached annotation
-    if os.path.exists(annotation_path):
-        print('Using cached annotation_path; %s' % (annotation_path))
-    else:
-        subprocess.call(
-            ['wget', '-q', dataset.annotation_url, '-O', annotation_zip_file])
-        subprocess.call(['unzip', annotation_zip_file, '-d', output_dir])
-
-    # download or use cached images
-    if os.path.exists(images_dir):
-        print('Using cached images_dir; %s' % (images_dir))
-    else:
-        subprocess.call(['wget', '-q', dataset.images_url, '-O', images_zip_file])
-        subprocess.call(['unzip', images_zip_file, '-d', output_dir])
-
-    return images_dir, annotation_path
-
-
-def benchmark_model(frozen_graph,
-                    images_dir,
-                    annotation_path,
-                    batch_size=1,
-                    image_shape=None,
-                    num_images=4096,
-                    tmp_dir='.benchmark_model_tmp_dir',
-                    remove_tmp_dir=True,
-                    output_path=None,
-                    display_every=100):
-    """Computes accuracy and performance statistics
-
-    Computes accuracy and performance statistics by executing over many images
-    from the MSCOCO dataset defined by images_dir and annotation_path.
-
-    Args
-    ----
-        frozen_graph: A GraphDef representing the object detection model to
-            test.  Alternatively, a string representing the path to the saved
-            frozen graph.
-        images_dir: A string representing the path of the COCO images
-            directory.
-        annotation_path: A string representing the path of the COCO annotation
-            file.
-        batch_size: An integer representing the batch size to use when feeding
-            images to the model.
-        image_shape: An optional tuple of integers representing a fixed shape
-            to resize all images before testing.
-        num_images: An integer representing the number of images in the
-            dataset to evaluate with.
-        tmp_dir: A string representing the path where the function may create
-            a temporary directory to store intermediate files.
-        output_path: An optional string representing a path to store the
-            statistics in JSON format.
-        display_every: int, print log every display_every iteration
-    Returns
-    -------
-        statistics: A named dictionary of accuracy and performance statistics
-        computed for the model.
-    """
-    if os.path.exists(tmp_dir):
-        if not remove_tmp_dir:
-            raise RuntimeError('Temporary directory exists; %s' % tmp_dir)
-        subprocess.call(['rm', '-rf', tmp_dir])
-    if batch_size > 1 and image_shape is None:
-        raise RuntimeError(
-            'Fixed image shape must be provided for batch size > 1')
-
-    from pycocotools.coco import COCO
-    from pycocotools.cocoeval import COCOeval
-
+def get_dataset(images_dir,
+                annotation_path,
+                batch_size,
+                use_synthetic,
+                input_size):
+  image_ids = None
+  if use_synthetic:
+    features = np.random.normal(
+      loc=112, scale=70,
+      size=(batch_size, input_size, input_size, 3)).astype(np.float32)
+    features = np.clip(features, 0.0, 255.0)
+    features = tf.convert_to_tensor(value=tf.compat.v1.get_variable(
+      "features", dtype=tf.float32, initializer=tf.constant(features)))
+    dataset = tf.data.Dataset.from_tensor_slices([features])
+    dataset = dataset.repeat()
+  else:
     coco = COCO(annotation_file=annotation_path)
-
-    # get list of image ids to use for evaluation
     image_ids = coco.getImgIds()
-    if num_images > len(image_ids):
-        print(
-            'Num images provided %d exceeds number in dataset %d, using %d images instead'
-            % (num_images, len(image_ids), len(image_ids)))
-        num_images = len(image_ids)
-    image_ids = image_ids[0:num_images]
-
-    # load frozen graph from file if string, otherwise must be GraphDef
-    if isinstance(frozen_graph, str):
-        frozen_graph_path = frozen_graph
-        frozen_graph = tf.GraphDef()
-        with open(frozen_graph_path, 'rb') as f:
-            frozen_graph.ParseFromString(f.read())
-    elif not isinstance(frozen_graph, tf.GraphDef):
-        raise TypeError('Expected frozen_graph to be GraphDef or str')
-
-    tf_config = tf.ConfigProto()
-    tf_config.gpu_options.allow_growth = True
-
-    coco_detections = []  # list of all bounding box detections in coco format
-    runtimes = []  # list of runtimes for each batch
-    image_counts = []  # list of number of images in each batch
-
-    with tf.Graph().as_default() as tf_graph:
-        with tf.Session(config=tf_config) as tf_sess:
-            tf.import_graph_def(frozen_graph, name='')
-            train_writer = tf.summary.FileWriter('./tensorboard', tf_sess.graph)
-            tf_input = tf_graph.get_tensor_by_name(INPUT_NAME + ':0')
-            tf_boxes = tf_graph.get_tensor_by_name(BOXES_NAME + ':0')
-            tf_classes = tf_graph.get_tensor_by_name(CLASSES_NAME + ':0')
-            tf_scores = tf_graph.get_tensor_by_name(SCORES_NAME + ':0')
-            tf_num_detections = tf_graph.get_tensor_by_name(
-                NUM_DETECTIONS_NAME + ':0')
-
-            # load batches from coco dataset
-            for image_idx in range(0, len(image_ids), batch_size):
-                batch_image_ids = image_ids[image_idx:image_idx + batch_size]
-                batch_images = []
-                batch_coco_images = []
-
-                # read images from file
-                for image_id in batch_image_ids:
-                    coco_img = coco.imgs[image_id]
-                    batch_coco_images.append(coco_img)
-                    image_path = os.path.join(images_dir,
-                                              coco_img['file_name'])
-                    image = _read_image(image_path, image_shape)           
-                    batch_images.append(image)
-
-                # run once outside of timing to initialize
-                if image_idx == 0:
-                    boxes, classes, scores, num_detections = tf_sess.run(
-                        [tf_boxes, tf_classes, tf_scores, tf_num_detections],
-                        feed_dict={tf_input: batch_images})
-
-                # execute model and compute time difference
-                t0 = time.time()
-                boxes, classes, scores, num_detections = tf_sess.run(
-                    [tf_boxes, tf_classes, tf_scores, tf_num_detections],
-                    feed_dict={tf_input: batch_images})
-                t1 = time.time()
-
-                # log runtime and image count
-                runtimes.append(float(t1 - t0))
-                if len(runtimes) % display_every == 0:
-                    print("    step %d/%d, iter_time(ms)=%.4f" % (
-                        len(runtimes),
-                        (len(image_ids) + batch_size - 1) / batch_size,
-                        np.mean(runtimes) * 1000))
-                image_counts.append(len(batch_images))
-
-                # add coco detections for this batch to running list
-                batch_coco_detections = []
-                for i, image_id in enumerate(batch_image_ids):
-                    image_width = batch_coco_images[i]['width']
-                    image_height = batch_coco_images[i]['height']
-
-                    for j in range(int(num_detections[i])):
-                        bbox = boxes[i][j]
-                        bbox_coco_fmt = [
-                            bbox[1] * image_width,  # x0
-                            bbox[0] * image_height,  # x1
-                            (bbox[3] - bbox[1]) * image_width,  # width
-                            (bbox[2] - bbox[0]) * image_height,  # height
-                        ]
-
-                        coco_detection = {
-                            'image_id': image_id,
-                            'category_id': int(classes[i][j]),
-                            'bbox': bbox_coco_fmt,
-                            'score': float(scores[i][j])
-                        }
-
-                        coco_detections.append(coco_detection)
-
-    # write coco detections to file
-    subprocess.call(['mkdir', '-p', tmp_dir])
-    coco_detections_path = os.path.join(tmp_dir, 'coco_detections.json')
-    with open(coco_detections_path, 'w') as f:
-        json.dump(coco_detections, f)
-
-    # compute coco metrics
-    cocoDt = coco.loadRes(coco_detections_path)
-    eval = COCOeval(coco, cocoDt, 'bbox')
-    eval.params.imgIds = image_ids
-
-    eval.evaluate()
-    eval.accumulate()
-    eval.summarize()
-
-    statistics = {
-        'map': eval.stats[0],
-        'avg_latency_ms': 1000.0 * np.mean(runtimes),
-        'avg_throughput_fps': np.sum(image_counts) / np.sum(runtimes),
-        'runtimes_ms': [1000.0 * r for r in runtimes]
-    }
-
-    if output_path is not None:
-        subprocess.call(['mkdir', '-p', os.path.dirname(output_path)])
-        with open(output_path, 'w') as f:
-            json.dump(statistics, f)
-
-    subprocess.call(['rm', '-rf', tmp_dir])
-
-    return statistics
+    image_paths = []
+    for image_id in image_ids:
+      coco_img = coco.imgs[image_id]
+      image_paths.append(os.path.join(images_dir, coco_img['file_name']))
+    dataset = tf.data.Dataset.from_tensor_slices(image_paths)
+    def preprocess_fn(path):
+      image = tf.io.read_file(path)
+      image = tf.image.decode_jpeg(image, channels=3)
+      if input_size is not None:
+        image = tf.image.resize(image, size=(input_size, input_size))
+        image = tf.cast(image, tf.uint8)
+      return image
+    dataset = dataset.map(map_func=preprocess_fn, num_parallel_calls=8)
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.repeat(count=1)
+    return dataset, image_ids
 
 
-def _read_image(image_path, image_shape):
-    image = Image.open(image_path).convert('RGB')
-    if image_shape is not None:
-        image = image.resize(image_shape[::-1])
-    return np.array(image)
+def get_func_from_saved_model(saved_model_dir):
+  saved_model_loaded = tf.saved_model.load(
+      saved_model_dir, tags=[tag_constants.SERVING])
+  graph_func = saved_model_loaded.signatures[
+      signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY]
+  return graph_func
+
+
+def get_graph_func(saved_model_dir,
+                   data_dir,
+                   calib_data_dir,
+                   annotation_path,
+                   input_size,
+                   conversion_params=trt.DEFAULT_TRT_CONVERSION_PARAMS,
+                   use_trt=False,
+                   num_calib_inputs=None,
+                   use_synthetic=False,
+                   batch_size=None,
+                   optimize_offline=False):
+  """Retreives a frozen SavedModel and applies TF-TRT
+  use_trt: bool, if true use TensorRT
+  precision: str, floating point precision (FP32, FP16, or INT8)
+  batch_size: int, batch size for TensorRT optimizations
+  returns: TF function that is ready to run for inference
+  """
+  start_time = time.time()
+  graph_func = get_func_from_saved_model(saved_model_dir)
+  if use_trt:
+    converter = trt.TrtGraphConverterV2(
+        input_saved_model_dir=saved_model_dir,
+        conversion_params=conversion_params,
+    )
+    def input_fn(input_data_dir, num_iterations):
+      dataset, image_ids = get_dataset(
+          images_dir=input_data_dir,
+          annotation_path=annotation_path,
+          batch_size=batch_size,
+          use_synthetic=False,
+          input_size=input_size)
+      for i, batch_images in enumerate(dataset):
+        if i >= num_iterations:
+          break
+        yield (batch_images,)
+        print("  step %d/%d" % (i+1, num_iterations))
+        i += 1
+    if conversion_params.precision_mode != 'INT8':
+      print('Graph convertion...')
+      converter.convert()
+      converted_saved_model_dir = 'converted_saved_model'
+      if optimize_offline:
+        print('Building TensorRT engines...')
+        converter.build(input_fn=partial(input_fn, data_files, 1))
+      converter.save(output_saved_model_dir=converted_saved_model_dir)
+      graph_func = get_func_from_saved_model(converted_saved_model_dir)
+    else:
+      print('Graph convertion and INT8 calibration...')
+      converter.convert(calibration_input_fn=partial(
+          input_fn, calib_data_dir, num_calib_inputs//batch_size))
+      if optimize_offline:
+        print('Building TensorRT engines...')
+        converter.build(input_fn=partial(input_fn, data_files, 1))
+      converted_saved_model_dir = 'converted_saved_model'
+      converter.save(output_saved_model_dir=converted_saved_model_dir)
+      graph_func = get_func_from_saved_model(converted_saved_model_dir)
+  return graph_func, {'conversion': time.time() - start_time}
+
+
+def run_inference(graph_func,
+                  data_dir,
+                  annotation_path,
+                  batch_size,
+                  input_size,
+                  num_iterations,
+                  num_warmup_iterations,
+                  use_synthetic,
+                  display_every=100,
+                  mode='validation',
+                  target_duration=None):
+  """Run the given graph_func on the data files provided. In validation mode,
+  it consumes TFRecords with labels and reports accuracy. In benchmark mode, it
+  times inference on real data (.jpgs).
+  """
+  results = {}
+  predictions = {}
+  iter_times = []
+  initial_time = time.time()
+
+  dataset, image_ids = get_dataset(images_dir=data_dir,
+                        annotation_path=annotation_path,
+                        batch_size=batch_size,
+                        use_synthetic=use_synthetic,
+                        input_size=input_size)
+  if mode == 'validation':
+    for i, batch_images in enumerate(dataset):
+      start_time = time.time()
+      batch_preds = graph_func(batch_images)
+      end_time = time.time()
+      iter_times.append(end_time - start_time)
+      for key in batch_preds.keys():
+        if key not in predictions:
+          predictions[key] = [batch_preds[key]]
+        else:
+          predictions[key].append(batch_preds[key])
+      if i % display_every == 0:
+        print("  step %d/%d, iter_time(ms)=%.0f" %
+              (i+1, 4096//batch_size, iter_times[-1]*1000))
+      if i > 1 and target_duration is not None and \
+        time.time() - initial_time > target_duration:
+        break
+  elif mode == 'benchmark':
+    for i, batch_images in enumerate(dataset):
+      if i >= num_warmup_iterations:
+        start_time = time.time()
+        batch_preds = list(graph_func(batch_images).values())[0].numpy()
+        iter_times.append(time.time() - start_time)
+        if i % display_every == 0:
+          print("  step %d/%d, iter_time(ms)=%.0f" %
+                (i+1, num_iterations, iter_times[-1]*1000))
+      else:
+        batch_preds = list(graph_func(batch_images).values())[0].numpy()
+      if i > 0 and target_duration is not None and \
+        time.time() - initial_time > target_duration:
+        break
+      if num_iterations is not None and i >= num_iterations:
+        break
+
+  if not iter_times:
+    return results
+  iter_times = np.array(iter_times)
+  iter_times = iter_times[num_warmup_iterations:]
+  results['total_time'] = np.sum(iter_times)
+  results['images_per_sec'] = np.mean(batch_size / iter_times)
+  results['99th_percentile'] = np.percentile(
+      iter_times, q=99, interpolation='lower') * 1000
+  results['latency_mean'] = np.mean(iter_times) * 1000
+  results['latency_median'] = np.median(iter_times) * 1000
+  results['latency_min'] = np.min(iter_times) * 1000
+  return results, predictions, image_ids
+
+
+def eval_model(predictions, image_ids, annotation_path):
+  name_map = {
+      'output_0':'boxes',
+      'output_1':'classes',
+      'output_2':'num_detections',
+      'output_3':'scores',
+  }
+  for old_key in list(predictions.keys()):
+    if old_key in name_map:
+      new_key = name_map[old_key]
+      predictions[new_key] = predictions[old_key]
+      del predictions[old_key]
+  for key in predictions:
+    predictions[key] = [t.numpy() for t in predictions[key]]
+    predictions[key] = np.vstack(predictions[key])
+    if key == 'num_detections':
+      predictions[key] = predictions[key].ravel()
+    
+  coco = COCO(annotation_file=annotation_path)
+  coco_detections = []
+  for i, image_id in enumerate(image_ids):
+    coco_img = coco.imgs[image_id]
+    image_width = coco_img['width']
+    image_height = coco_img['height']
+
+    for j in range(int(predictions['num_detections'][i])):
+      bbox = predictions['boxes'][i][j]
+      y1, x1, y2, x2 = list(bbox)
+      bbox_coco_fmt = [
+        x1 * image_width,  # x0
+        y1 * image_height,  # x1
+        (x2 - x1) * image_width,  # width
+        (y2 - y1) * image_height,  # height
+      ]
+      coco_detection = {
+        'image_id': image_id,
+        'category_id': int(predictions['classes'][i][j]),
+        'bbox': [int(coord) for coord in bbox_coco_fmt],
+        'score': float(predictions['scores'][i][j])
+      }
+      coco_detections.append(coco_detection)
+  # write coco detections to file
+  tmp_dir = 'tmp_detection_results'
+  subprocess.call(['mkdir', '-p', tmp_dir])
+  coco_detections_path = os.path.join(tmp_dir, 'coco_detections.json')
+  with open(coco_detections_path, 'w') as f:
+    json.dump(coco_detections, f)
+  cocoDt = coco.loadRes(coco_detections_path)
+  subprocess.call(['rm', '-r', tmp_dir])
+
+  # compute coco metrics
+  eval = COCOeval(coco, cocoDt, 'bbox')
+  eval.params.imgIds = image_ids
+
+  eval.evaluate()
+  eval.accumulate()
+  eval.summarize()
+
+  return eval.stats[0]
+
+   
+def get_trt_conversion_params(max_workspace_size_bytes,
+                              precision_mode,
+                              minimum_segment_size,
+                              max_batch_size):
+  conversion_params = trt.DEFAULT_TRT_CONVERSION_PARAMS
+  conversion_params = conversion_params._replace(
+      max_workspace_size_bytes=max_workspace_size_bytes)
+  conversion_params = conversion_params._replace(precision_mode=precision_mode)
+  conversion_params = conversion_params._replace(
+      minimum_segment_size=minimum_segment_size)
+  conversion_params = conversion_params._replace(
+      use_calibration=precision_mode == 'INT8')
+  conversion_params = conversion_params._replace(
+      max_batch_size=max_batch_size)
+  return conversion_params
+
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser(description='Evaluate model')
+  parser.add_argument('--saved_model_dir', type=str, default=None,
+                      help='Directory containing a particular saved model.')
+  parser.add_argument('--input_size', type=int, default=640,
+                      help='Size of input images expected by the model')
+  parser.add_argument('--data_dir', type=str, default=None,
+                      help='Directory containing validation set'
+                      'TFRecord files.')
+  parser.add_argument('--annotation_path', type=str,
+                      help='Path that contains COCO annotations')
+  parser.add_argument('--calib_data_dir', type=str,
+                      help='Directory containing TFRecord files for'
+                      'calibrating INT8.')
+  parser.add_argument('--use_trt', action='store_true',
+                      help='If set, the graph will be converted to a'
+                      'TensorRT graph.')
+  parser.add_argument('--optimize_offline', action='store_true',
+                      help='If set, TensorRT engines are built'
+                      'before runtime.')
+  parser.add_argument('--precision', type=str,
+                      choices=['FP32', 'FP16', 'INT8'], default='FP32',
+                      help='Precision mode to use. FP16 and INT8 only'
+                      'work in conjunction with --use_trt')
+  parser.add_argument('--batch_size', type=int, default=8,
+                      help='Number of images per batch.')
+  parser.add_argument('--minimum_segment_size', type=int, default=2,
+                      help='Minimum number of TF ops in a TRT engine.')
+  parser.add_argument('--num_iterations', type=int, default=2048,
+                      help='How many iterations(batches) to evaluate.'
+                      'If not supplied, the whole set will be evaluated.')
+  parser.add_argument('--display_every', type=int, default=100,
+                      help='Number of iterations executed between'
+                      'two consecutive display of metrics')
+  parser.add_argument('--use_synthetic', action='store_true',
+                      help='If set, one batch of random data is'
+                      'generated and used at every iteration.')
+  parser.add_argument('--num_warmup_iterations', type=int, default=50,
+                      help='Number of initial iterations skipped from timing')
+  parser.add_argument('--num_calib_inputs', type=int, default=500,
+                      help='Number of inputs (e.g. images) used for'
+                      'calibration (last batch is skipped in case'
+                      'it is not full)')
+  parser.add_argument('--max_workspace_size', type=int, default=(1<<30),
+                      help='workspace size in bytes')
+  parser.add_argument('--mode', choices=['validation', 'benchmark'],
+                      default='validation',
+                      help='Which mode to use (validation or benchmark)')
+  parser.add_argument('--target_duration', type=int, default=None,
+                      help='If set, script will run for specified'
+                      'number of seconds.')
+  args = parser.parse_args()
+
+  if args.precision != 'FP32' and not args.use_trt:
+    raise ValueError('TensorRT must be enabled for FP16'
+                     'or INT8 modes (--use_trt).')
+  if (args.precision == 'INT8' and not args.calib_data_dir
+      and not args.use_synthetic):
+    raise ValueError('--calib_data_dir is required for INT8 mode')
+  if (args.num_iterations is not None
+      and args.num_iterations <= args.num_warmup_iterations):
+    raise ValueError(
+        '--num_iterations must be larger than --num_warmup_iterations '
+        '({} <= {})'.format(args.num_iterations, args.num_warmup_iterations))
+  if args.num_calib_inputs < args.batch_size:
+    raise ValueError(
+        '--num_calib_inputs must not be smaller than --batch_size'
+        '({} <= {})'.format(args.num_calib_inputs, args.batch_size))
+  if args.mode == 'validation' and args.use_synthetic:
+    raise ValueError('Cannot use both validation mode and synthetic dataset')
+  if args.data_dir is None and not args.use_synthetic:
+    raise ValueError("--data_dir required if you are not using synthetic data")
+  if args.use_synthetic and args.num_iterations is None:
+    raise ValueError("--num_iterations is required for --use_synthetic")
+
+#  calib_files = []
+#  data_files = []
+#  def get_files(data_dir, filename_pattern=None):
+#    if data_dir is None:
+#      return []
+#    files = tf.io.gfile.glob(os.path.join(
+#        data_dir, filename_pattern) if filename_pattern else data_dir)
+#    if files == []:
+#      raise ValueError('Can not find any files in {} with '
+#                       'pattern "{}"'.format(data_dir, filename_pattern))
+#    return files
+#  if not args.use_synthetic:
+#    data_files = get_files(args.data_dir)
+#    if args.precision == 'INT8':
+#      calib_files = get_files(args.calib_data_dir)
+
+  params = get_trt_conversion_params(
+      args.max_workspace_size,
+      args.precision,
+      args.minimum_segment_size,
+      args.batch_size,)
+  graph_func, times = get_graph_func(
+      saved_model_dir=args.saved_model_dir,
+      data_dir=args.data_dir,
+      calib_data_dir=args.calib_data_dir,
+      annotation_path=args.annotation_path,
+      input_size=args.input_size,
+      conversion_params=params,
+      use_trt=args.use_trt,
+      batch_size=args.batch_size,
+      num_calib_inputs=args.num_calib_inputs,
+      use_synthetic=args.use_synthetic,
+      optimize_offline=args.optimize_offline)
+
+  def print_dict(input_dict, prefix='  ', postfix=''):
+    for k, v in sorted(input_dict.items()):
+      print('{}{}: {}{}'.format(prefix, k, '%.1f'%v if isinstance(v, float) else v, postfix))
+  print('Benchmark arguments:')
+  print_dict(vars(args))
+  print('TensorRT Conversion Params:')
+  print_dict(dict(params._asdict()))
+  print('Conversion times:')
+  print_dict(times, postfix='s')
+
+  results, predictions, image_ids = run_inference(graph_func,
+                data_dir=args.data_dir,
+                annotation_path=args.annotation_path,
+                batch_size=args.batch_size,
+                num_iterations=args.num_iterations,
+                num_warmup_iterations=args.num_warmup_iterations,
+                input_size=args.input_size,
+                use_synthetic=args.use_synthetic,
+                display_every=args.display_every,
+                mode=args.mode,
+                target_duration=args.target_duration)
+  if args.mode == 'validation':
+    mAP = eval_model(predictions, image_ids, args.annotation_path)
+    print('  mAP: %f' % mAP)
+  print('  images/sec: %d' % results['images_per_sec'])
+  print('  99th_percentile(ms): %.2f' % results['99th_percentile'])
+  print('  total_time(s): %.1f' % results['total_time'])
+  print('  latency_mean(ms): %.2f' % results['latency_mean'])
+  print('  latency_median(ms): %.2f' % results['latency_median'])
+  print('  latency_min(ms): %.2f' % results['latency_min'])
