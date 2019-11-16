@@ -15,13 +15,5 @@
 # limitations under the License.
 # =============================================================================
 
-from setuptools import find_packages, setup
-
-setup(
-    name='tftrt',
-    version='0.0',
-    description='NVIDIA TensorRT integration in TensorFlow',
-    author='NVIDIA',
-    packages=find_packages(),
-    install_requires=['tqdm']
-)
+from .object_detection import download_model, download_dataset, optimize_model, benchmark_model
+from .test import test

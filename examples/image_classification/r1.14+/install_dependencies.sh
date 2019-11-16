@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
 #
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
@@ -14,3 +15,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # =============================================================================
+
+set +e
+
+TF_MODELS_DIR=$PWD/../third_party/models
+
+echo Install slim
+pushd $TF_MODELS_DIR/research/slim
+pip install .
+popd
+
+echo Install requests
+pip install requests
+
